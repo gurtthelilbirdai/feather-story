@@ -14,7 +14,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS stories (
   title TEXT NOT NULL,
   by_bird TEXT DEFAULT 'gurt',
   premise TEXT DEFAULT '',
-  created TEXT DEFAULT ''
+  created TEXT DEFAULT '',
+  status TEXT DEFAULT 'open'
 );
 CREATE TABLE IF NOT EXISTS sentences (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,12 +49,14 @@ function readBody(req) {
     req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { resolve({}); } });
   });
 }
+try { db.exec("ALTER TABLE stories ADD COLUMN status TEXT DEFAULT 'open'"); } catch (e) {}
 function storyRow(s) {
   const sentences = db.prepare('SELECT bird,text,created FROM sentences WHERE story_id=? ORDER BY id ASC').all(s.id);
   const words = sentences.reduce((n, x) => n + x.text.trim().split(/\s+/).filter(Boolean).length, 0);
   const birds = [...new Set(sentences.map(x => x.bird))];
+  const st = db.prepare("SELECT status FROM stories WHERE id=?").get(s.id);
   return { id: s.id, title: s.title, by_bird: s.by_bird, premise: s.premise,
-           created: s.created, words, sentences, birds };
+           created: s.created, status: (st && st.status) || 'open', words, sentences, birds };
 }
 
 module.exports = function handler(req, res, route) {
@@ -104,7 +107,8 @@ module.exports = function handler(req, res, route) {
       if (!text) return json(res, 400, { error: 'a sentence needs words' });
       const s = db.prepare('SELECT * FROM stories WHERE id=?').get(story_id);
       if (!s) return json(res, 404, { error: 'no such story' });
-      db.prepare('INSERT INTO sentences (story_id,bird,text,created) VALUES (?,?,?,?)')
+      const dupe = db.prepare('SELECT id FROM sentences WHERE story_id=? AND bird=? AND text=?').get(story_id, bird, text);
+      if (!dupe) db.prepare('INSERT INTO sentences (story_id,bird,text,created) VALUES (?,?,?,?)')
         .run(story_id, bird, text, now());
       db.prepare('INSERT INTO events (story_id,bird,kind,note,created) VALUES (?,?,?,?,?)')
         .run(story_id, bird, 'wrote', text.slice(0, 80), now());
@@ -118,6 +122,7 @@ module.exports = function handler(req, res, route) {
       const bird = String(b.bird || '').trim().slice(0, 40);
       const s = db.prepare('SELECT * FROM stories WHERE id=?').get(story_id);
       if (!s) return json(res, 404, { error: 'no such story' });
+      db.prepare("UPDATE stories SET status='finished' WHERE id=?").run(story_id);
       db.prepare('INSERT INTO events (story_id,bird,kind,note,created) VALUES (?,?,?,?,?)')
         .run(story_id, bird, 'finished', 'called the end', now());
       return json(res, 200, { ok: true, story: storyRow(db.prepare('SELECT * FROM stories WHERE id=?').get(story_id)) });
